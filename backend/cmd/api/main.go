@@ -29,21 +29,26 @@ func main() {
 
 	// Auto-migrate (Simple Ponytail migration for MVP)
 	log.Println("Running database migrations...")
-	migrationSQL, err := os.ReadFile("scripts/migrations/001_init.sql")
-	if err == nil {
-		_, err = db.Pool.Exec(ctx, string(migrationSQL))
-		if err != nil {
-			log.Printf("Warning: Migration execution failed (could be already migrated): %v", err)
+	migrations := []string{"001_init.sql", "002_pos.sql"}
+	for _, m := range migrations {
+		migrationSQL, err := os.ReadFile("scripts/migrations/" + m)
+		if err == nil {
+			_, err = db.Pool.Exec(ctx, string(migrationSQL))
+			if err != nil {
+				log.Printf("Warning: Migration %s execution failed (could be already migrated): %v", m, err)
+			} else {
+				log.Printf("Migration %s executed successfully!", m)
+			}
 		} else {
-			log.Println("Migrations executed successfully!")
+			log.Printf("Warning: Could not read migration file %s: %v", m, err)
 		}
-	} else {
-		log.Printf("Warning: Could not read migration file: %v", err)
 	}
 
 	// Initialize Repositories
 	userRepo := postgres.NewUserRepository(db)
 	_ = postgres.NewWorkspaceRepository(db)
+	posRepo := postgres.NewPosRepository(db)
+	analyticsRepo := postgres.NewAnalyticsRepository(db)
 
 	// Initialize Services
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -51,9 +56,13 @@ func main() {
 		jwtSecret = "supersecret_dev_key"
 	}
 	authService := service.NewAuthService(userRepo, jwtSecret)
+	posService := service.NewPosService(posRepo)
+	analyticsService := service.NewAnalyticsService(analyticsRepo)
 
 	// Initialize Handlers
 	authHandler := handler_http.NewAuthHandler(authService)
+	posHandler := handler_http.NewPosHandler(posService)
+	analyticsHandler := handler_http.NewAnalyticsHandler(analyticsService)
 
 	// Setup Router
 	r := gin.Default()
@@ -71,6 +80,17 @@ func main() {
 		{
 			auth.POST("/register", authHandler.Register)
 			auth.POST("/login", authHandler.Login)
+		}
+
+		// POS Endpoints (Workspace Scoped)
+		workspace := api.Group("/workspaces/:workspaceId")
+		{
+			workspace.GET("/products", posHandler.GetProducts)
+			workspace.POST("/products", posHandler.CreateProduct)
+			workspace.POST("/checkout", posHandler.Checkout)
+			
+			// Analytics
+			workspace.GET("/analytics/summary", analyticsHandler.GetSummary)
 		}
 	}
 
